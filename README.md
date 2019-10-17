@@ -1,4 +1,4 @@
-## Continues Learning of Deep Neural Networks
+## Domain Transfer for Reinforcement Learning Agents
 
 Data Innovation Lab winter semester 2019
 
