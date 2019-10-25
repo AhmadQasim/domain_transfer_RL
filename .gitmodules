@@ -1,0 +1,4 @@
+[submodule "reinforcemnet_learner"]
+	path = reinforcemnet_learner
+	url = git@gitlab.virtualbaker.com:MachineLearning/reinforcemnet_learner.git
+	branch = master

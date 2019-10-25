@@ -179,3 +179,17 @@ You can select the second gpu by using exporting CUDA_VISIBLE_DEVICES=GPU_ID var
 ```
 export CUDA_VISIBLE_DEVICES=1
 ```
+
+### Git Submodules
+The reinforcement learner repository has been added as a git submodule to the current repository.
+Here are a couple of useful commands for dealing with git submodules.
+```
+# first time setup command after cloning the repo
+git submodule init 
+
+# pull all changes in the repo including changes in the submodules
+git pull --recurse-submodules
+
+# pull all changes for the submodules only
+git submodule update --remote
+```
