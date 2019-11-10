@@ -1,3 +1,4 @@
+import yaml
 import fire
 import gym
 import torch
@@ -20,14 +21,20 @@ torch.set_default_tensor_type('torch.cuda.FloatTensor')
 class DDPG(BaseAgent):
     def __init__(self):
         super().__init__()
+        self.config_path = "../reinforcemnet_learner/inventory.yaml"
+        f = open(self.config_path, 'r')
+        self.config = yaml.load(f, Loader=yaml.Loader)
+
         self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcemnet_learner/inventory.yaml")
         self.observation_space = {'producer_state': {'production_queue': [], 'is_busy': False},
                                   'inventory_state': {'products': []},
                                   'consumer_state': {'order_queue': []}}
 
-        for i in range(5):
+        self.items_to_id = utils.map_items_to_id(self.config)
+
+        for i in range(50):
             obs, reward, done, _ = self.env.step(self.env.action_space.sample())
-            obs = utils.observation_state_vector(obs, return_count=True)
+            obs = utils.observation_state_vector(obs, self.items_to_id, return_count=True)
             print(obs)
 
 
