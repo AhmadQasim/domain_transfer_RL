@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import matplotlib.pyplot as plt
 
 from utils import OrnsteinUhlenbeckProcess
 import gym_baking.envs.utils as utils
@@ -31,21 +32,26 @@ class DDPG(BaseAgent):
                                   'consumer_state': {'order_queue': []}}
 
         self.items_to_id = utils.map_items_to_id(self.config)
+        self.items_count = len(self.items_to_id.keys())
+        self.feature_count = 5
 
-        for i in range(50):
+        self.state_shape = (self.items_count * self.feature_count, )
+        self.action_shape = self.env.action_space.shape
+
+        '''
+        for i in range(5):
             obs, reward, done, _ = self.env.step(self.env.action_space.sample())
-            obs = utils.observation_state_vector(obs, self.items_to_id, return_count=True)
+            print(self.env.action_space.sample())
+            obs = utils.observation_state_vector(obs, return_count=True, items_to_id=self.items_to_id)
             print(obs)
 
-
         exit(1)
+        '''
 
-        self.state_shape = self.env.observation_space.shape
-        self.action_shape = self.env.action_space.shape
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.target_actor = Actor(self.state_shape, self.action_shape)
+        self.target_actor = Actor(self.state_shape, self.action_shape, self.items_count)
         self.target_critic = Critic(self.state_shape, self.action_shape)
-        self.actor = Actor(self.state_shape, self.action_shape)
+        self.actor = Actor(self.state_shape, self.action_shape, self.items_count)
         self.critic = Critic(self.state_shape, self.action_shape)
         self.replay_buffer_states = torch.zeros(size=(1, self.state_shape[0]))
         self.replay_buffer_actions = torch.zeros(size=(1, self.action_shape[0]))
@@ -65,10 +71,10 @@ class DDPG(BaseAgent):
         self.min_epsilon = 0.01
         self.eps_decay = 0.005
         self.default_q_value_actor = -1
-        self.noise = OrnsteinUhlenbeckProcess(size=self.action_shape)
+        self.noise = OrnsteinUhlenbeckProcess(size=1)
         # range of the action possible for Pendulum-v0
         self.act_range = 2.0
-        self.model_path = "models/DDPG-Pendulum.hdf5"
+        self.model_path = "../models/inventory_agent_ddpg.hdf5"
 
         # models
         self.actor_optim = torch.optim.Adam(self.actor.parameters())
@@ -90,31 +96,87 @@ class DDPG(BaseAgent):
         self.replay_buffer_done = torch.cat([self.replay_buffer_done, experience[3]])
         self.replay_buffer_next_states = torch.cat([self.replay_buffer_next_states, experience[4]])
 
+    def prepare_obs_for_model_in(self, observation):
+        # [in_production_count, inventory_count, age_mean, consumer_count, waiting_times_mean]
+        result = np.zeros(shape=(self.items_count, self.feature_count))
+
+        production_queue = observation[0]
+        inventory = observation[1]
+        consumer_queue = observation[2]
+
+        for key, val in production_queue.items():
+            result[key, 0] = val
+
+        for key, val in inventory.items():
+            result[key, 1] = val[0]
+            result[key, 2] = val[1]
+
+        for key, val in consumer_queue.items():
+            result[key, 3] = val[0]
+            result[key, 4] = val[1]
+
+        return result
+
+    def preprocess_observation(self, observation):
+        observation = utils.observation_state_vector(observation,
+                                                     return_count=True,
+                                                     items_to_id=self.items_to_id)
+        observation = self.prepare_obs_for_model_in(observation)
+
+        return observation
+
     def sample_from_memory(self):
         random_rows = np.random.randint(0, self.replay_buffer_states.shape[0], size=self.batch_size)
         return [self.replay_buffer_states[random_rows, :], self.replay_buffer_actions[random_rows, :],
                 self.replay_buffer_rewards[random_rows, :], self.replay_buffer_done[random_rows, :],
                 self.replay_buffer_next_states[random_rows, :]]
 
+    @staticmethod
+    def preprocess_action(prob, count):
+        items_type = torch.argmax(prob, dim=1)
+        items_type = items_type.cpu().detach().numpy()
+        count = count.cpu().detach().numpy()
+        action = np.column_stack(tup=(items_type, count))
+
+        return action
+
     def take_action(self, state):
-        action = self.actor.forward(torch.tensor(state, dtype=torch.float))
-        action = action.cpu().detach().numpy()
+        prob, count = self.actor.forward(torch.tensor(state, dtype=torch.float))
+        action = self.preprocess_action(prob, count).flatten().astype(np.int16)
         new_observation, reward, done, info = self.env.step(action)
-        return new_observation, action, reward, done
+        new_observation = self.preprocess_observation(new_observation)
+
+        # for all items, reward is inversely related to mean_age and mean_waiting_times
+        for i in range(self.items_count):
+            reward -= new_observation[i, 3] # + (new_observation[i, 2]
+
+        items = torch.distributions.Categorical(prob)
+        items = torch.tensor(items.sample(), dtype=torch.float).unsqueeze(1)
+        target_actions = torch.cat([items, count], dim=1)
+
+        # print(new_observation, target_actions, reward)
+        # print("-------")
+        return new_observation.flatten(), target_actions, reward, done
 
     def fill_empty_memory(self):
         observation = self.env.reset()
+        observation = self.preprocess_observation(observation)
+        observation = np.expand_dims(observation.flatten(), axis=0)
         for _ in range(100):
             new_observation, action, reward, done = self.take_action(observation)
+            new_observation = np.expand_dims(new_observation, axis=0)
             done = 1.0 if done else 0.0
-            self.save_to_memory([torch.tensor(observation, dtype=torch.float).unsqueeze(0),
-                                 torch.tensor(action, dtype=torch.float).unsqueeze(0),
+            self.save_to_memory([torch.tensor(observation, dtype=torch.float),
+                                 torch.tensor(action, dtype=torch.float),
                                  torch.tensor(reward, dtype=torch.float).unsqueeze(0).unsqueeze(0),
                                  torch.tensor(done, dtype=torch.float).unsqueeze(0).unsqueeze(0),
-                                 torch.tensor(new_observation, dtype=torch.float).unsqueeze(0)
+                                 torch.tensor(new_observation, dtype=torch.float)
                                  ])
             if done:
                 new_observation = self.env.reset()
+                new_observation = self.preprocess_observation(new_observation)
+                new_observation = np.expand_dims(new_observation.flatten(), axis=0)
+
             observation = new_observation
 
     def soft_update(self, source, target):
@@ -132,7 +194,11 @@ class DDPG(BaseAgent):
         states, actions, rewards, done, next_states = self.sample_from_memory()
 
         target_actions = self.target_actor.forward(next_states)
-        target_state_q_vals = self.target_critic.forward(next_states, target_actions)
+        items = torch.distributions.Categorical(target_actions[0])
+        items = torch.tensor(items.sample(), dtype=torch.float).unsqueeze(1)
+        target_actions = torch.cat([items, target_actions[1]], dim=1)
+        target_state_q_vals = self.target_critic.forward(next_states,
+                                                         target_actions)
         q_values = self.critic.forward(states, actions)
         q_targets = rewards + (self.discount_factor * target_state_q_vals)
 
@@ -143,8 +209,12 @@ class DDPG(BaseAgent):
         self.critic_optim.step()
 
         # update actor
+        target_actions = self.actor.forward(states)
         self.actor.zero_grad()
-        actor_loss = - self.critic.forward(states, self.actor.forward(states))
+        items = torch.distributions.Categorical(target_actions[0])
+        items = torch.tensor(items.sample(), dtype=torch.float).unsqueeze(1)
+        target_actions = torch.cat([items, target_actions[1]], dim=1)
+        actor_loss = - self.critic.forward(states, target_actions)
         actor_loss = actor_loss.mean()
         actor_loss.backward()
         self.actor_optim.step()
@@ -157,20 +227,25 @@ class DDPG(BaseAgent):
         self.fill_empty_memory()
         total_reward = 0
 
+        total_mean_reward = []
+
         for ep in range(self.episodes):
             episode_rewards = []
             observation = self.env.reset()
+            observation = self.preprocess_observation(observation)
+            observation = np.expand_dims(observation.flatten(), axis=0)
             for step in range(self.max_steps):
-                observation = np.squeeze(observation)
                 new_observation, action, reward, done = self.take_action(observation)
-                action = np.clip(action+self.noise.generate(step), -self.act_range, self.act_range)
+                action = action.cpu().detach().numpy()
+                new_observation = np.expand_dims(new_observation, axis=0)
+                action[0, 1] = np.clip(action[0, 1]+self.noise.generate(step), -self.act_range, self.act_range)
                 # action = action+self.noise.generate(step)
 
-                self.save_to_memory([torch.tensor(observation, dtype=torch.float).unsqueeze(0),
-                                     torch.tensor(action, dtype=torch.float).unsqueeze(0),
+                self.save_to_memory([torch.tensor(observation, dtype=torch.float),
+                                     torch.tensor(action, dtype=torch.float),
                                      torch.tensor(reward, dtype=torch.float).unsqueeze(0).unsqueeze(0),
                                      torch.tensor(done, dtype=torch.float).unsqueeze(0).unsqueeze(0),
-                                     torch.tensor(new_observation, dtype=torch.float).unsqueeze(0)
+                                     torch.tensor(new_observation, dtype=torch.float)
                                      ])
                 episode_rewards.append(reward)
                 observation = new_observation
@@ -183,12 +258,19 @@ class DDPG(BaseAgent):
 
             # episode summary
             total_reward += np.sum(episode_rewards)
+            total_mean_reward.append(total_reward / (ep + 1))
             print("Episode : ", ep)
             print("Episode Reward : ", np.sum(episode_rewards))
             print("Total Mean Reward: ", total_reward / (ep + 1))
             print("==========================================")
 
             torch.save(self.actor, self.model_path)
+
+        plt.plot(list(range(self.episodes)), total_mean_reward)
+        plt.xlabel('Episodes')
+        plt.ylabel('Reward')
+        plt.legend()
+        plt.show()
 
     def test(self):
         # test agent
@@ -210,24 +292,27 @@ class DDPG(BaseAgent):
 
 
 class Actor(nn.Module):
-    def __init__(self, state_shape, action_shape):
+    def __init__(self, state_shape, action_shape, items_count):
         super(Actor, self).__init__()
         self.state_shape = state_shape
         self.action_shape = action_shape
         self.fc1 = nn.Linear(self.state_shape[0], 256)
         self.fc2 = nn.Linear(256, 128)
-        self.fc3 = nn.Linear(128, self.action_shape[0])
+        self.fc_count = nn.Linear(128, 1)
+        self.fc_type = nn.Linear(128, items_count)
 
         # initialize weights
         nn.init.xavier_uniform_(self.fc1.weight)
-        nn.init.xavier_uniform_(self.fc3.weight)
+        nn.init.xavier_uniform_(self.fc_count.weight)
+        nn.init.xavier_uniform_(self.fc_type.weight)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = torch.tanh(self.fc3(x))
+        item_type = torch.softmax(self.fc_type(x), dim=1)
+        count = torch.sigmoid(self.fc_count(x)) * 30
 
-        return x
+        return item_type, count
 
 
 class Critic(nn.Module):

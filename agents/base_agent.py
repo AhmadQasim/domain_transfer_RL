@@ -23,7 +23,7 @@ class BaseAgent:
 
         return self.test_rewards
 
-    def take_action(self):
+    def take_action(self, state):
         assert False, "This method should be implemented by the base class."
 
         return None
