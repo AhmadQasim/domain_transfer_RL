@@ -59,7 +59,7 @@ class AutoRegression:
         for i in range(self.days):
             for j in range(self.bins_smooth):
                 for item in range(self.items_count):
-                    bins_sum = np.sum(self.data[i, j:j+self.bins_size, item])
+                    bins_sum = np.sum(self.data[i, j:j + self.bins_size, item])
                     bins_data[i, j, item] = bins_sum
 
         self.bins_data = bins_data
@@ -86,11 +86,6 @@ class AutoRegression:
                                              end=self.prepared_data.shape[0] + self.bins_smooth - 1)
         self.predictions = predictions
 
-        fig = plt.figure()
-        plt.plot(predictions, alpha=0.5)
-        plt.show()
-        plt.close(fig)
-
         return self.predictions
 
     def sample_ar(self):
@@ -100,38 +95,52 @@ class AutoRegression:
         test = self.bins_data[-1, :lag, self.test_prod]
         prev = self.bins_data[-2, :lag, self.train_prod]
 
-        n_steps = 70
-        prev = np.append(prev, test[0:n_steps])
-        predictions = test[0:n_steps]
+        n_steps = 5
+        # prev = np.append(prev, test[0:n_steps])
+        # predictions = test[0:n_steps]
+        predictions = []
 
-        for i in range(lag-n_steps):
-            prediction = np.sum(coeff[:-1] * prev[i+n_steps: lag+i+n_steps])
-            prediction += coeff[-1]
+        for i in range(0, lag, n_steps):
+            curr_day_data = np.array(test[i:i + n_steps])
 
-            predictions = np.append(predictions, prediction)
-            prev = np.append(prev, prediction)
+            curr_day_pred = prev.copy()
+            for j in range(n_steps * 2):
+                prediction = np.sum(coeff[:-1] * curr_day_pred[i + j:])
+                prediction += coeff[-1]
+                curr_day_pred = np.append(curr_day_pred, prediction)
+
+            average_diff = np.sum(curr_day_data - curr_day_pred[lag + i: lag + i + n_steps]) / n_steps
+            curr_day_pred += average_diff
+
+            predictions = np.append(predictions, curr_day_pred[lag + i + n_steps: lag + i + (n_steps * 2)])
+            prev = np.append(prev, curr_day_data)
 
         predictions = np.array(predictions)
-        predictions += -np.amin(predictions)
+        predictions[predictions < 0] = 0
 
-        fig = plt.figure()
-        plt.plot(test, alpha=0.5)
-        plt.plot(predictions, alpha=0.5)
-        plt.show()
-        plt.close(fig)
+        return test, predictions
 
     def predict_day(self, n_steps):
         lag = self.model_fit.k_ar
         coeff = np.flip(self.model_fit.params)
         test = self.bins_data[-1, :n_steps, self.test_prod]
 
-        for i in range(lag-n_steps):
-            prediction = np.sum(coeff[:-n_steps+i] * test[i: lag + i])
+        for i in range(lag - n_steps):
+            prediction = np.sum(coeff[:-n_steps + i] * test[i: lag + i])
             prediction += coeff[-1]
 
     def plot_data(self, data):
         fig = plt.figure()
-        plt.plot(np.sum(data, axis=0) / self.days, alpha=0.5)
+        plt.plot(np.sum(data[:, :, self.train_prod], axis=0) / self.days, alpha=0.5,
+                 color='orange',
+                 label='Training Data (Normal Day)')
+        plt.plot(np.sum(data[:, :, self.test_prod], axis=0) / self.days, alpha=0.5,
+
+                 label='Test Data (Shifted Demand)')
+        plt.title('Average Demand')
+        plt.xlabel('Steps')
+        plt.ylabel('Product Amount')
+        plt.legend()
         plt.show()
         plt.close(fig)
 
@@ -142,5 +151,16 @@ if __name__ == "__main__":
     ar.prepare_data()
     ar.plot_data(ar.bins_data)
     ar.train_ar()
-    ar.test_ar()
-    ar.sample_ar()
+    training_pred = ar.test_ar()
+    test, test_pred = ar.sample_ar()
+
+    fig = plt.figure()
+    plt.plot(test, alpha=0.5, label="Test Data")
+    plt.plot(test_pred, alpha=0.5, color="orange", label="Adjusted Prediction")
+    plt.plot(training_pred, alpha=0.5, linestyle="--", color="orange", label="Unadjusted Prediction")
+    plt.title('Autoregressive Demand Prediction')
+    plt.xlabel('Steps')
+    plt.ylabel('Product Amount')
+    plt.legend()
+    plt.show()
+    plt.close(fig)
