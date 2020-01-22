@@ -17,10 +17,10 @@ class SupportVectorRegression:
         self.items_to_id = utils.map_items_to_id(self.config)
         self.items_count = len(self.items_to_id.keys())
         self.steps = 1440
-        self.days = 100
+        self.days = 50
         self.bins_size = 60
         self.bins = int(self.steps / self.bins_size)
-        self.windows_size = 4
+        self.windows_size = 3
 
         self.data = None
         self.bins_data = None
@@ -53,7 +53,7 @@ class SupportVectorRegression:
 
         self.data = np.array(data)
 
-        bins_data = np.empty(shape=(self.days, self.bins, self.items_count))
+        bins_data = np.zeros(shape=(self.days, self.bins, self.items_count))
 
         for i in range(self.days):
             for item in range(self.items_count):
@@ -63,6 +63,17 @@ class SupportVectorRegression:
         self.bins_data = bins_data
 
         return self.data, self.bins_data
+
+    def prepare_data(self, Y, item):
+        X = np.zeros(shape=(self.bins * self.days, self.windows_size, 2))
+        for i in range(self.days):
+            for j in range(self.bins):
+                if j < self.windows_size:
+                    continue
+                X[(i * self.bins) + j, :, 0] = np.arange(j-self.windows_size, j)
+                X[(i * self.bins) + j, :, 1] = Y[i, j - self.windows_size:j, item]
+
+        return X.reshape((-1, self.windows_size * 2)), Y[:, :, item].reshape(-1, )
 
     def plot_data(self, data):
         fig = plt.figure()
@@ -78,19 +89,21 @@ class SupportVectorRegression:
                        kernel=self.kernel,
                        degree=self.degree,
                        tol=self.tol)
-            X = np.array(list(range(self.bins)) * self.days)
-            _svr.fit(X.reshape(-1, 1), self.bins_data[:, :, item].reshape(-1, ))
+
+            X, Y = self.prepare_data(self.bins_data, item=item)
+            _svr.fit(X, Y)
             self.items_svr.append(_svr)
 
     def test_svr(self):
         fig = plt.figure()
 
         for item in range(self.items_count):
-            x0 = [0]
-            x_hats = [[x0]]
-            for i in range(self.bins):
-                x_hat = self.items_svr[item].predict([[i]])
-                x_hats.append([x_hat])
+            x_hats = []
+            for i in range(self.windows_size, self.bins):
+                x = self.bins_data[0, i-self.windows_size:i, item]
+                x = np.vstack([np.arange(i-self.windows_size, i), x]).reshape(1, -1)
+                x_hat = self.items_svr[item].predict(x)
+                x_hats.append(x_hat)
 
             x_hats = np.array(x_hats)
 
