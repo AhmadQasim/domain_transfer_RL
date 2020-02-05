@@ -28,6 +28,8 @@ class AutoRegressiveDemandPredictor:
             self.ar.load_models()
         else:
             self.ar = AutoRegression(model_path, config_path, steps, days, bins_size)
+            self.ar.sample_data()
+            self.ar.prepare_data()
             self.ar.train_ar()
             self.ar.save_models()
 
