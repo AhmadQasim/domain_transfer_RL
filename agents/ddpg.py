@@ -37,17 +37,19 @@ class DDPG(BaseAgent):
 
         self.state_shape = (self.items_count * self.feature_count, )
         self.action_shape = self.env.action_space.shape
+        self.act_range = self.config["maximum_delivery"]
+        self.max_quantity = self.config["maximum_inventory"]
 
         """
         order_1 = []
 
         prev = 0
 
-        for i in range(1000):
-            obs, reward, done, _ = self.env.step([0, 0])
+        for i in range(20):
+            obs, reward, done, _, _, _ = self.env.step([0, 0])
             obs = utils.observation_state_vector(obs, return_count=True, items_to_id=self.items_to_id)
             if 1 in obs[2].keys():
-                val = obs[2][1][0] - prev
+                val = obs[2][1][0]
                 prev = obs[2][1][0]
                 order_1.append(val)
             else:
@@ -62,15 +64,17 @@ class DDPG(BaseAgent):
         exit(1)
         """
 
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.arch = "dense"
-        self.max_steps = 500
+        self.max_steps = 20
         self.target_actor = Actor(self.state_shape,
                                   self.action_shape,
                                   self.items_count,
                                   self.feature_count,
                                   self.arch,
-                                  self.max_steps)
+                                  self.max_steps,
+                                  self.act_range)
         self.target_critic = Critic(self.state_shape,
                                     self.action_shape,
                                     self.items_count,
@@ -82,7 +86,8 @@ class DDPG(BaseAgent):
                            self.items_count,
                            self.feature_count,
                            self.arch,
-                           self.max_steps)
+                           self.max_steps,
+                           self.act_range)
         self.critic = Critic(self.state_shape,
                              self.action_shape,
                              self.items_count,
@@ -96,9 +101,9 @@ class DDPG(BaseAgent):
         self.replay_buffer_next_states = torch.zeros(size=(1, self.state_shape[0]))
         self.replay_buffer_timestep = torch.zeros(size=(1, 1), dtype=torch.long)
         self.replay_buffer_size_thresh = 1000
-        self.batch_size = 256
-        self.episodes = 300
-        self.test_episodes = 1
+        self.batch_size = 128
+        self.episodes = 1000
+        self.test_episodes = 10
         self.discount_factor = 0.99
         self.test_rewards = []
         self.epochs = 10
@@ -109,7 +114,6 @@ class DDPG(BaseAgent):
         self.default_q_value_actor = -1
         self.noise = OrnsteinUhlenbeckProcess(size=1)
         # range of the action possible for Pendulum-v0
-        self.act_range = 30
         self.model_path = "../models/inventory_agent_ddpg.hdf5"
 
         # models
@@ -183,14 +187,17 @@ class DDPG(BaseAgent):
         prob, count = self.actor.forward(torch.tensor(state, dtype=torch.float),
                                          torch.tensor(timestep, dtype=torch.long).unsqueeze(0))
         action = self.preprocess_action(prob, count).flatten().astype(np.int16)
-        new_observation, reward, done, info = self.env.step(action)
+
+        new_observation, reward, done, info, _, _ = self.env.step(action)
         new_observation = self.preprocess_observation(new_observation)
 
-        reward = 0
+        s, info = self.env._metric.get_metric(state_history=self.env.state_history, done=True, step=timestep)
+
+        # reward = 0
 
         # for all items, reward is inversely related to mean_age and mean_waiting_times
-        for i in range(self.items_count):
-            reward -= (new_observation[i, 3])
+        # for i in range(self.items_count):
+        reward -= info["missed customer"]
 
         items = torch.tensor(action[0], dtype=torch.float).unsqueeze(0).unsqueeze(0)
         target_actions = torch.cat([items, count], dim=1)
@@ -268,6 +275,7 @@ class DDPG(BaseAgent):
         total_reward = 0
 
         total_mean_reward = []
+        per_ep_reward = []
 
         for ep in range(self.episodes):
             episode_rewards = []
@@ -297,20 +305,25 @@ class DDPG(BaseAgent):
                     break
 
             # episode summary
+            s, info = self.env._metric.get_metric(state_history=self.env.state_history, done=True, step=self.max_steps)
             total_reward += np.sum(episode_rewards)
             total_mean_reward.append(total_reward / (ep + 1))
+            per_ep_reward.append(np.sum(episode_rewards))
             print("Episode : ", ep)
             print("Episode Reward : ", np.sum(episode_rewards))
             print("Total Mean Reward: ", total_reward / (ep + 1))
+            print(f'score: {s} and \n info {info}')
             print("==========================================")
 
             torch.save(self.actor, self.model_path)
 
-        plt.plot(list(range(self.episodes)), total_mean_reward)
+        plt.plot(list(range(self.episodes)), per_ep_reward, linestyle="--", label="Episode Reward")
+        plt.plot(list(range(self.episodes)), total_mean_reward, label="Mean Reward")
         plt.xlabel('Episodes')
         plt.ylabel('Reward')
-        plt.title('Average Reward with max steps {}'.format(self.max_steps))
-        plt.show()
+        plt.title('DDPG Training w/ DR')
+        plt.legend()
+        plt.savefig("ddpg_train_dr.pdf")
 
     def plot_observations_actions(self, observations, actions):
 
@@ -324,12 +337,17 @@ class DDPG(BaseAgent):
         observations = []
         actions = np.zeros(shape=(self.max_steps, 2))
         self.actor = torch.load(self.model_path)
+
+        metric_1 = []
+        metric_2 = []
+
         for i in range(self.test_episodes):
             observation = self.env.reset()
             observation = self.preprocess_observation(observation)
             observation = np.expand_dims(observation.flatten(), axis=0)
             total_reward_per_episode = 0
             for j in range(self.max_steps):
+                print(observation)
                 new_observation, action, reward, done = self.take_action(observation, j)
                 action = action.cpu().detach().numpy()[0]
                 if action[0] == 0:
@@ -344,19 +362,23 @@ class DDPG(BaseAgent):
 
             self.test_rewards.append(total_reward_per_episode)
 
-            print(f"Test Episode: {i}/{self.test_episodes}")
+            s, info = self.env._metric.get_metric(state_history=self.env.state_history, done=True, step=self.max_steps)
+            metric_1.append(info["sale_miss_ratio"])
+            metric_2.append(info["product_wait_ratio"])
 
         self.plot_observations_actions(observations, actions)
         print("Average reward for test agent: ", sum(self.test_rewards) / self.test_episodes)
-
+        print("Sales Miss Ratio Average: ", sum(metric_1) / len(metric_1))
+        print("Products Wait Ratio Average: ", sum(metric_2) / len(metric_2))
 
 class Actor(nn.Module):
-    def __init__(self, state_shape, action_shape, items_count, feature_count, arch='dense', max_steps=100):
+    def __init__(self, state_shape, action_shape, items_count, feature_count, arch='dense', max_steps=100, max_act=5):
         super(Actor, self).__init__()
         self.arch = arch
         self.item_count = items_count
         self.feature_count = feature_count
         self.max_steps = max_steps
+        self.max_act = max_act
 
         if self.arch == "dense":
             self.state_shape = state_shape
@@ -393,7 +415,7 @@ class Actor(nn.Module):
 
             x = F.relu(self.fc2(x))
             item_type = torch.softmax(self.fc_type(x), dim=1)
-            count = torch.sigmoid(self.fc_count(x)) * 30
+            count = torch.sigmoid(self.fc_count(x)) * self.max_act
 
             # count = F.relu(self.fc_count(x))
 
@@ -404,7 +426,7 @@ class Actor(nn.Module):
             x = x.reshape(-1, 128 * self.item_count)
 
             item_type = torch.softmax(self.fc_type(x), dim=1)
-            count = torch.sigmoid(self.fc_count(x)) * 30
+            count = torch.sigmoid(self.fc_count(x)) * self.max_act
 
         return item_type, count
 

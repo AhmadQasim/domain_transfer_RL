@@ -4,12 +4,10 @@ import numpy as np
 import gym
 import yaml
 from statsmodels.tsa.ar_model import AR
-import pickle
 
 
 class AutoRegression:
     def __init__(self,
-                 model_path="../models/ar_models.pickle",
                  config_path="../reinforcemnet_learner/inventory.yaml",
                  steps=120,
                  days=10,
@@ -18,7 +16,6 @@ class AutoRegression:
         self.config_path = config_path
         f = open(self.config_path, 'r')
         self.config = yaml.load(f, Loader=yaml.Loader)
-        self.model_path = model_path
 
         self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcemnet_learner/inventory.yaml")
 
@@ -32,13 +29,16 @@ class AutoRegression:
         self.bins_smooth = self.steps - self.bins_size
 
         self.data = None
-        self.prepared_data = []
+        self.prepared_data = None
         self.bins_data = None
-        self.predictions = []
+        self.predictions = None
 
-        self.prev = []
+        self.prev = None
 
-        self.model_fit = []
+        self.model_fit = None
+
+        self.train_prod = 1
+        self.test_prod = 0
 
     def sample_data(self):
         data = []
@@ -73,39 +73,69 @@ class AutoRegression:
         return self.data, self.bins_data
 
     def prepare_data(self):
-        for i in range(self.items_count):
-            self.prepared_data.append(self.bins_data[:, :, i].reshape(self.days * self.bins_smooth))
+        self.prepared_data = self.bins_data[:, :, self.train_prod].reshape(self.days * self.bins_smooth)
 
         return self.prepared_data
 
     def train_ar(self):
-        for i in range(self.items_count):
-            model = AR(self.prepared_data[i])
-            model_fit = model.fit(maxlag=self.bins_smooth,
-                                  ic='t-stat',
-                                  maxiter=35)
+        model = AR(self.prepared_data)
+        model_fit = model.fit(maxlag=self.bins_smooth,
+                              ic='t-stat',
+                              maxiter=35)
 
-            self.model_fit.append(model_fit)
-            self.prev.append(self.bins_data[-1, :self.model_fit[i].k_ar, i])
+        self.model_fit = model_fit
+        self.prev = self.bins_data[-1, :self.model_fit.k_ar, self.train_prod]
 
         return self.model_fit
 
     def test_ar(self):
-        for i in range(self.items_count):
-            predictions = self.model_fit[i].predict(start=self.prepared_data[i].shape[0],
-                                                    end=self.prepared_data[i].shape[0] + self.bins_smooth - 1)
-            self.predictions.append(predictions)
+        predictions = self.model_fit.predict(start=self.prepared_data.shape[0],
+                                             end=self.prepared_data.shape[0] + self.bins_smooth - 1)
+        self.predictions = predictions
 
         return self.predictions
 
-    def predict_next_n(self, curr_data, pred_steps, item):
-        coeff = np.flip(self.model_fit[item].params)
+    def sample_ar(self):
+        lag = self.model_fit.k_ar
+        test = self.bins_data[-1, :lag, self.test_prod]
+
+        n_steps = 5
+        predictions = []
+
+        for i in range(0, lag, n_steps):
+            curr_day_data = np.array(test[i:i + n_steps])
+
+            if lag - i < n_steps:
+                continue
+            """
+            curr_day_pred = prev.copy()
+            for j in range(n_steps * 2):
+                prediction = np.sum(coeff[:-1] * curr_day_pred[i + j:])
+                prediction += coeff[-1]
+                curr_day_pred = np.append(curr_day_pred, prediction)
+
+            average_diff = np.sum(curr_day_data - curr_day_pred[lag + i: lag + i + n_steps]) / n_steps
+            curr_day_pred += average_diff
+
+            predictions = np.append(predictions, curr_day_pred[lag + i + n_steps: lag + i + (n_steps * 2)])
+            prev = np.append(prev, curr_day_data)
+            """
+            predictions = np.append(predictions,
+                                    self.predict_next_n(curr_data=curr_day_data, pred_steps=n_steps))
+
+        predictions = np.array(predictions)
+        predictions[predictions < 0] = 0
+
+        return test, predictions
+
+    def predict_next_n(self, curr_data, pred_steps):
+        coeff = np.flip(self.model_fit.params)
         n_steps = curr_data.shape[0]
 
-        curr_prev = self.prev[item].shape[0]
-        self.prev[item] = np.append(self.prev[item], curr_data)
+        curr_prev = self.prev.shape[0]
+        self.prev = np.append(self.prev, curr_data)
 
-        curr_day_pred = self.prev[item].copy()
+        curr_day_pred = self.prev.copy()
         for j in range(pred_steps):
             prediction = np.sum(coeff[:-1] * np.flip(curr_day_pred[n_steps + j:]))
             prediction += coeff[-1]
@@ -115,24 +145,27 @@ class AutoRegression:
         curr_day_pred += average_diff
         predictions = curr_day_pred[curr_prev + n_steps:curr_prev + pred_steps + n_steps]
 
-        self.prev[item] = self.prev[item][n_steps:]
+        self.prev = self.prev[n_steps:]
 
         return predictions
 
-    def predict_day(self, n_steps, item):
-        lag = self.model_fit[item].k_ar
-        coeff = np.flip(self.model_fit[item].params)
-        test = self.bins_data[-1, :n_steps, item + 1]
+    def predict_day(self, n_steps):
+        lag = self.model_fit.k_ar
+        coeff = np.flip(self.model_fit.params)
+        test = self.bins_data[-1, :n_steps, self.test_prod]
 
         for i in range(lag - n_steps):
             prediction = np.sum(coeff[:-n_steps + i] * test[i: lag + i])
             prediction += coeff[-1]
 
-    def plot_real_data(self, data):
+    def plot_data(self, data):
         fig = plt.figure()
-        for i in range(self.items_count):
-            plt.plot(np.sum(data[:, :, i], axis=0) / self.days, alpha=0.5,
-                     label='Product ' + str(i))
+        plt.plot(np.sum(data[:, :, self.train_prod], axis=0) / self.days, alpha=0.5,
+                 color='orange',
+                 label='Training Data (Normal Day)')
+        plt.plot(np.sum(data[:, :, self.test_prod], axis=0) / self.days, alpha=0.5,
+
+                 label='Test Data (Shifted Demand)')
         plt.title('Average Demand')
         plt.xlabel('Steps')
         plt.ylabel('Product Amount')
@@ -140,41 +173,23 @@ class AutoRegression:
         plt.show()
         plt.close(fig)
 
-    def plot_predicted_data(self, data):
-        fig = plt.figure()
-        for i in range(self.items_count):
-            plt.plot(data[i], alpha=0.5, label="Prediction Product " + str(i))
-        plt.title('Autoregressive Demand Prediction')
-        plt.xlabel('Steps')
-        plt.ylabel('Product Amount')
-        plt.legend()
-        plt.show()
-        plt.close(fig)
-
-    def save_models(self):
-        model = {'ar_models': self.model_fit, 'prev': self.prev, 'item_count': self.items_count}
-
-        with open(self.model_path, 'wb') as f:
-            pickle.dump(model, f)
-
-    def load_models(self):
-        with open(self.model_path, 'rb') as f:
-            model = pickle.load(f)
-        self.items_count = model['item_count']
-
-        for i in range(self.items_count):
-            self.model_fit.append(model['ar_models'][i])
-            self.prev.append(model['prev'][i])
-
 
 if __name__ == "__main__":
-    ar = AutoRegression("../models/ar_models.pickle")
+    ar = AutoRegression()
     ar.sample_data()
     ar.prepare_data()
-    ar.plot_real_data(ar.bins_data)
+    ar.plot_data(ar.bins_data)
     ar.train_ar()
     training_pred = ar.test_ar()
-    ar.plot_predicted_data(training_pred)
-    ar.save_models()
-    ar.load_models()
+    test, test_pred = ar.sample_ar()
 
+    fig = plt.figure()
+    plt.plot(test, alpha=0.5, label="Test Data")
+    plt.plot(test_pred, alpha=0.5, color="orange", label="Adjusted Prediction")
+    plt.plot(training_pred, alpha=0.5, linestyle="--", color="orange", label="Unadjusted Prediction")
+    plt.title('Autoregressive Demand Prediction')
+    plt.xlabel('Steps')
+    plt.ylabel('Product Amount')
+    plt.legend()
+    plt.show()
+    plt.close(fig)
