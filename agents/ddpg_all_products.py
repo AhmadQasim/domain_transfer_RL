@@ -64,7 +64,7 @@ class DDPG(BaseAgent):
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.arch = "dense"
-        self.max_steps = 500
+        self.max_steps = 100
         self.target_actor = Actor(self.state_shape,
                                   self.action_shape,
                                   self.items_count,
@@ -95,7 +95,7 @@ class DDPG(BaseAgent):
         self.replay_buffer_done = torch.zeros(size=(1, 1))
         self.replay_buffer_next_states = torch.zeros(size=(1, self.state_shape[0]))
         self.replay_buffer_timestep = torch.zeros(size=(1, 1), dtype=torch.long)
-        self.replay_buffer_size_thresh = 1000
+        self.replay_buffer_size_thresh = 256
         self.batch_size = 256
         self.episodes = 300
         self.test_episodes = 1
@@ -170,29 +170,30 @@ class DDPG(BaseAgent):
                 self.replay_buffer_next_states[random_rows, :], self.replay_buffer_timestep[random_rows, :]]
 
     @staticmethod
-    def preprocess_action(prob, count):
-        items = torch.distributions.Categorical(prob)
-        items = torch.tensor(items.sample(), dtype=torch.float)
-        items_type = items.cpu().detach().numpy().astype(np.int)
-        count = count.cpu().detach().numpy()
-        action = np.column_stack(tup=(items_type, count))
+    def preprocess_action(count):
+        item_counts = count.cpu().detach().numpy()
+        item_type = np.argmax(item_counts)
+        item_count = np.amax(item_counts)
 
-        return action
+        return np.array([item_type, item_count])
 
     def take_action(self, state, timestep):
-        prob, count = self.actor.forward(torch.tensor(state, dtype=torch.float),
-                                         torch.tensor(timestep, dtype=torch.long).unsqueeze(0))
-        action = self.preprocess_action(prob, count).flatten().astype(np.int16)
+        count = self.actor.forward(torch.tensor(state, dtype=torch.float),
+                                   torch.tensor(timestep, dtype=torch.long).unsqueeze(0))
+        action = self.preprocess_action(count).flatten().astype(np.int16)
         new_observation, reward, done, info = self.env.step(action)
         new_observation = self.preprocess_observation(new_observation)
 
-        reward = 0
+        reward = reward * 1000
+
+        # reward = 0
 
         # for all items, reward is inversely related to mean_age and mean_waiting_times
-        for i in range(self.items_count):
-            reward -= (new_observation[i, 3])
+        # for i in range(self.items_count):
+        # reward -= (new_observation[i, 3] + new_observation[i, 2])
 
         items = torch.tensor(action[0], dtype=torch.float).unsqueeze(0).unsqueeze(0)
+        count = torch.tensor(action[1], dtype=torch.float).unsqueeze(0).unsqueeze(0)
         target_actions = torch.cat([items, count], dim=1)
 
         # print(new_observation, target_actions, reward)
@@ -234,10 +235,10 @@ class DDPG(BaseAgent):
     def optimize_model(self):
         states, actions, rewards, done, next_states, timestep = self.sample_from_memory()
 
-        prob, count = self.target_actor.forward(next_states, timestep)
-        action = torch.argmax(prob, dim=1).unsqueeze(1).float()
+        count = self.target_actor.forward(next_states, timestep)
+        items = torch.max(count, dim=1)
 
-        target_actions = torch.cat([action, count], dim=1)
+        target_actions = torch.cat([items[1].unsqueeze(1).float(), items[0].unsqueeze(1).float()], dim=1)
         target_state_q_vals = self.target_critic.forward(next_states,
                                                          target_actions, timestep)
         q_values = self.critic.forward(states, actions, timestep)
@@ -250,10 +251,11 @@ class DDPG(BaseAgent):
         self.critic_optim.step()
 
         # update actor
-        prob, count = self.actor.forward(states, timestep)
+        count = self.actor.forward(states, timestep)
         self.actor.zero_grad()
-        action = torch.argmax(prob, dim=1).unsqueeze(1).float()
-        target_actions = torch.cat([action, count], dim=1)
+        items = torch.max(count, dim=1)
+
+        target_actions = torch.cat([items[1].unsqueeze(1).float(), items[0].unsqueeze(1).float()], dim=1)
         actor_loss = - self.critic.forward(states, target_actions, timestep)
         actor_loss = actor_loss.mean()
         actor_loss.backward()
@@ -363,23 +365,20 @@ class Actor(nn.Module):
             self.action_shape = action_shape
             self.fc1 = nn.Linear(self.state_shape[0], 256)
             self.fc2 = nn.Linear(512, 128)
-            self.fc_count = nn.Linear(128, 1)
-            self.fc_type = nn.Linear(128, self.item_count)
+            self.fc_count = nn.Linear(128, self.item_count)
 
             self.embedding1 = nn.Embedding(self.max_steps, 256)
 
             # initialize weights
             nn.init.xavier_uniform_(self.fc1.weight)
             nn.init.xavier_uniform_(self.fc_count.weight)
-            nn.init.xavier_uniform_(self.fc_type.weight)
 
         else:
             self.state_shape = state_shape
             self.action_shape = action_shape
 
             self.lstm1 = nn.LSTM(input_size=self.feature_count, hidden_size=128, num_layers=3, batch_first=True)
-            self.fc_count = nn.Linear(128 * self.item_count, 1)
-            self.fc_type = nn.Linear(128 * self.item_count, items_count)
+            self.fc_count = nn.Linear(128 * self.item_count, self.item_count)
 
     def forward(self, x, timestep):
         if self.arch == "dense":
@@ -392,7 +391,6 @@ class Actor(nn.Module):
             x = torch.cat([x, x1], dim=1)
 
             x = F.relu(self.fc2(x))
-            item_type = torch.softmax(self.fc_type(x), dim=1)
             count = torch.sigmoid(self.fc_count(x)) * 30
 
             # count = F.relu(self.fc_count(x))
@@ -403,10 +401,9 @@ class Actor(nn.Module):
 
             x = x.reshape(-1, 128 * self.item_count)
 
-            item_type = torch.softmax(self.fc_type(x), dim=1)
             count = torch.sigmoid(self.fc_count(x)) * 30
 
-        return item_type, count
+        return count
 
 
 class Critic(nn.Module):

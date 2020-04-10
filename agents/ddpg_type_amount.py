@@ -64,7 +64,7 @@ class DDPG(BaseAgent):
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.arch = "dense"
-        self.max_steps = 500
+        self.max_steps = 100
         self.target_actor = Actor(self.state_shape,
                                   self.action_shape,
                                   self.items_count,
@@ -186,11 +186,13 @@ class DDPG(BaseAgent):
         new_observation, reward, done, info = self.env.step(action)
         new_observation = self.preprocess_observation(new_observation)
 
-        reward = 0
+        reward = reward * 1000
+
+        # reward = 0
 
         # for all items, reward is inversely related to mean_age and mean_waiting_times
-        for i in range(self.items_count):
-            reward -= (new_observation[i, 3])
+        # for i in range(self.items_count):
+        # reward -= (new_observation[i, 3])
 
         items = torch.tensor(action[0], dtype=torch.float).unsqueeze(0).unsqueeze(0)
         target_actions = torch.cat([items, count], dim=1)
@@ -363,6 +365,8 @@ class Actor(nn.Module):
             self.action_shape = action_shape
             self.fc1 = nn.Linear(self.state_shape[0], 256)
             self.fc2 = nn.Linear(512, 128)
+            self.fc3 = nn.Linear(1, 256)
+            self.fc4 = nn.Linear(256, 128)
             self.fc_count = nn.Linear(128, 1)
             self.fc_type = nn.Linear(128, self.item_count)
 
@@ -392,7 +396,13 @@ class Actor(nn.Module):
             x = torch.cat([x, x1], dim=1)
 
             x = F.relu(self.fc2(x))
+
             item_type = torch.softmax(self.fc_type(x), dim=1)
+            type_1 = torch.argmax(item_type, dim=1, keepdim=True).float()
+
+            x = self.fc3(type_1)
+            x = self.fc4(x)
+
             count = torch.sigmoid(self.fc_count(x)) * 30
 
             # count = F.relu(self.fc_count(x))
