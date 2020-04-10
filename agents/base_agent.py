@@ -3,7 +3,7 @@ class BaseAgent:
         self.model = None
         self.env = None
         self.episodes = None
-        self.max_actions_per_episode = None
+        self.max_steps_per_episode = None
         self.epsilon = 1
         self.min_epsilon = 0.01
         self.eps_decay = 0.005

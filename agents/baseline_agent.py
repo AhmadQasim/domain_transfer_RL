@@ -27,10 +27,9 @@ class BaselineAgent(BaseAgent):
         self.state_shape = (self.items_count * self.feature_count,)
         self.action_shape = self.env.action_space.shape
 
-        self.episodes = 100
-        self.max_actions_per_episode = 100
+        self.max_steps_per_episode = 100
         self.rewards = []
-        self.test_eps = 1000
+        self.test_eps = 300
         self.test_rewards = []
 
     def take_action(self, state):
@@ -69,12 +68,15 @@ class BaselineAgent(BaseAgent):
             obs, reward, done, _ = self.env.step(self.env.action_space.sample())
             obs = utils.observation_state_vector(obs, return_count=True, items_to_id=self.items_to_id)
 
-            for j in range(self.max_actions_per_episode):
+            for j in range(self.max_steps_per_episode - 2):
                 new_observation, reward, done = self.take_action(obs)
                 obs = utils.observation_state_vector(new_observation, return_count=True, items_to_id=self.items_to_id)
-                for i in range(self.items_count):
-                    if i in obs[2].keys():
-                        reward -= obs[2][i][0]
+
+                reward = reward * 1000
+
+                # for i in range(self.items_count):
+                #     if i in obs[2].keys():
+                #        reward -= obs[2][i][0]
 
                 episode_reward.append(reward)
 
