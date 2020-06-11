@@ -11,11 +11,11 @@ from agents.base_agent import BaseAgent
 class BaselineAgent(BaseAgent):
     def __init__(self):
         super().__init__()
-        self.config_path = "../reinforcemnet_learner/inventory.yaml"
+        self.config_path = "../reinforcement_learner/inventory.yaml"
         f = open(self.config_path, 'r')
         self.config = yaml.load(f, Loader=yaml.Loader)
 
-        self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcemnet_learner/inventory.yaml")
+        self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcement_learner/inventory.yaml")
         self.observation_space = {'producer_state': {'production_queue': [], 'is_busy': False},
                                   'inventory_state': {'products': []},
                                   'consumer_state': {'order_queue': []}}

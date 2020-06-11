@@ -8,11 +8,11 @@ from sklearn.svm import SVR
 
 class SupportVectorRegression:
     def __init__(self):
-        self.config_path = "../reinforcemnet_learner/inventory.yaml"
+        self.config_path = "../reinforcement_learner/inventory.yaml"
         f = open(self.config_path, 'r')
         self.config = yaml.load(f, Loader=yaml.Loader)
 
-        self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcemnet_learner/inventory.yaml")
+        self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcement_learner/inventory.yaml")
 
         self.items_to_id = utils.map_items_to_id(self.config)
         self.items_count = len(self.items_to_id.keys())

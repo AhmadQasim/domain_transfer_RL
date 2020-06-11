@@ -8,7 +8,7 @@ from statsmodels.tsa.ar_model import AR
 
 class AutoRegression:
     def __init__(self,
-                 config_path="../reinforcemnet_learner/inventory.yaml",
+                 config_path="../reinforcement_learner/inventory.yaml",
                  steps=120,
                  days=10,
                  bins_size=10):
@@ -17,7 +17,7 @@ class AutoRegression:
         f = open(self.config_path, 'r')
         self.config = yaml.load(f, Loader=yaml.Loader)
 
-        self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcemnet_learner/inventory.yaml")
+        self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcement_learner/inventory.yaml")
 
         self.items_to_id = utils.map_items_to_id(self.config)
         self.items_count = len(self.items_to_id.keys())

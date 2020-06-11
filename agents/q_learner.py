@@ -10,7 +10,7 @@ from agents.base_agent import BaseAgent
 class QLearningDiscreteEnv(BaseAgent):
     def __init__(self, env_name='FrozenLake-v0'):
         super().__init__()
-        self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcemnet_learner/inventory.yaml")
+        self.env = gym.make("gym_baking:Inventory-v0", config_path="../reinforcement_learner/inventory.yaml")
         self.observation_space = {'producer_state': {'production_queue': [], 'is_busy': False},
                                   'inventory_state': {'products': []},
                                   'consumer_state': {'order_queue': []}}

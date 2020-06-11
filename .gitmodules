@@ -1,4 +1,3 @@
 [submodule "reinforcement_learner"]
 	path = reinforcement_learner
 	url = git@github.com:AhmadQasim/reinforcement_learner.git
-	branch = master
